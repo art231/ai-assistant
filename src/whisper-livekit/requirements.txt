@@ -1,0 +1,4 @@
+whisper-livekit==0.1.0
+pika==1.3.2
+numpy==1.26.2
+torch==2.1.2

@@ -1,0 +1,248 @@
+version: "3.8"
+
+name: voice-chat-ai
+
+networks:
+  voicechat-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  recordings-data:
+  ollama-data:
+  prometheus-data:
+  grafana-data:
+
+services:
+  # ============================================================
+  # PostgreSQL 16 + Pgvector
+  # ============================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: voicechat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-voicechat}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - voicechat-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-voicechat}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # RabbitMQ with Management Plugin
+  # ============================================================
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: voicechat-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    networks:
+      - voicechat-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================
+  # Mediasoup (Node.js SFU)
+  # ============================================================
+  mediasoup:
+    build:
+      context: .
+      dockerfile: docker/mediasoup/Dockerfile
+    container_name: voicechat-mediasoup
+    restart: unless-stopped
+    environment:
+      MEDIASOUP_IP: ${MEDIASOUP_IP:-0.0.0.0}
+      MEDIASOUP_PORT: ${MEDIASOUP_PORT:-3000}
+      MEDIASOUP_ANNOUNCED_IP: ${MEDIASOUP_ANNOUNCED_IP:-127.0.0.1}
+      MEDIASOUP_MIN_PORT: ${MEDIASOUP_MIN_PORT:-40000}
+      MEDIASOUP_MAX_PORT: ${MEDIASOUP_MAX_PORT:-49999}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "${MEDIASOUP_PORT:-3000}:3000"
+      - "${MEDIASOUP_MIN_PORT:-40000}-${MEDIASOUP_MAX_PORT:-49999}:${MEDIASOUP_MIN_PORT:-40000}-${MEDIASOUP_MAX_PORT:-49999}/udp"
+    networks:
+      - voicechat-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ============================================================
+  # WhisperLiveKit (Python transcription)
+  # ============================================================
+  whisper-livekit:
+    build:
+      context: .
+      dockerfile: docker/whisper-livekit/Dockerfile
+    container_name: voicechat-whisper
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-base}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
+      RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
+      RABBITMQ_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+    networks:
+      - voicechat-network
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  # ============================================================
+  # Ollama (Llama 3 8B)
+  # ============================================================
+  ollama:
+    image: ollama/ollama:latest
+    container_name: voicechat-ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      OLLAMA_HOST: ${OLLAMA_HOST:-0.0.0.0:11434}
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - voicechat-network
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    entrypoint: >
+      sh -c "
+      ollama serve &
+      sleep 5 &&
+      ollama pull llama3:8b &&
+      wait
+      "
+
+  # ============================================================
+  # Backend (.NET 8 ASP.NET Core)
+  # ============================================================
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: voicechat-backend
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: ${ASPNETCORE_URLS:-http://+:5000}
+      ConnectionStrings__DefaultConnection: "Host=${POSTGRES_HOST:-postgres};Port=${POSTGRES_PORT:-5432};Database=${POSTGRES_DB:-voicechat};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:-postgres};Include Error Detail=true"
+      RabbitMQ__Host: ${RABBITMQ_HOST:-rabbitmq}
+      RabbitMQ__Port: ${RABBITMQ_PORT:-5672}
+      RabbitMQ__UserName: ${RABBITMQ_USER:-guest}
+      RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
+      Ollama__BaseUrl: ${OLLAMA_HOST:-http://ollama:11434}
+      Ollama__Model: ${OLLAMA_MODEL:-llama3:8b}
+      Mediasoup__Url: http://mediasoup:${MEDIASOUP_PORT:-3000}
+      Recordings__Path: ${RECORDINGS_PATH:-/app/recordings}
+    ports:
+      - "5000:5000"
+    volumes:
+      - recordings-data:/app/recordings
+    networks:
+      - voicechat-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+  # ============================================================
+  # Frontend (nginx + Angular)
+  # ============================================================
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    container_name: voicechat-frontend
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: ${BACKEND_URL:-http://backend:5000}
+      MEDIASOUP_URL: http://mediasoup:${MEDIASOUP_PORT:-3000}
+    ports:
+      - "4200:80"
+    networks:
+      - voicechat-network
+    depends_on:
+      - backend
+
+  # ============================================================
+  # Prometheus
+  # ============================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: voicechat-prometheus
+    restart: unless-stopped
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - voicechat-network
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+  # ============================================================
+  # Grafana
+  # ============================================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: voicechat-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./docker/grafana/datasources:/etc/grafana/provisioning/datasources
+      - grafana-data:/var/lib/grafana
+    networks:
+      - voicechat-network
+    depends_on:
+      - prometheus

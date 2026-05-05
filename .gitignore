@@ -1,0 +1,69 @@
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.sln.docstates
+*.userprefs
+.vs/
+*.DotSettings.user
+**/appsettings.Development.json
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+
+# Angular
+dist/
+tmp/
+*.ngsummary.json
+*.ngfactory.ts
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+*.egg-info/
+.eggs/
+dist/
+build/
+*.whl
+
+# Docker
+docker-compose.override.yml
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Audio recordings
+recordings/
+!recordings/.gitkeep
+
+# LoRA adapters
+lora_adapters/
+!lora_adapters/.gitkeep
+
+# Environment
+.env
+!.env.example
+
+# Prometheus
+docker/prometheus/data/
+docker/grafana/data/

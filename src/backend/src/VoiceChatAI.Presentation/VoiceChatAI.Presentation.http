@@ -1,0 +1,6 @@
+@VoiceChatAI.Presentation_HostAddress = http://localhost:5240
+
+GET {{VoiceChatAI.Presentation_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
