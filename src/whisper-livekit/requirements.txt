@@ -1,4 +1,6 @@
-whisper-livekit==0.1.0
+openai-whisper>=20231117
 pika==1.3.2
 numpy==1.26.2
-torch==2.1.2
+torch>=2.2.0
+setuptools>=68.0.0
+wheel>=0.41.0

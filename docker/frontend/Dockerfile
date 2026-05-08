@@ -23,7 +23,7 @@ FROM nginx:alpine AS runtime
 COPY docker/frontend/nginx.conf /etc/nginx/nginx.conf
 
 # Copy built Angular app
-COPY --from=build /app/dist/voicechatai-frontend/browser /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
