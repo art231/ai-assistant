@@ -90,4 +90,16 @@ export class ApiService {
     const params = new HttpParams().set('days', days.toString());
     return this.http.get<any[]>(`${this.apiUrl}/api/analytics/meeting-efficiency`, { params });
   }
+
+  // Room management - end room
+  endRoom(roomId: string): Observable<any> {
+    return this.http.post(`${this.apiUrl}/api/rooms/${roomId}/end`, {});
+  }
+
+  // PDF export
+  exportRoomPdf(roomId: string): Observable<Blob> {
+    return this.http.get(`${this.apiUrl}/api/analytics/room/${roomId}/export-pdf`, {
+      responseType: 'blob'
+    });
+  }
 }

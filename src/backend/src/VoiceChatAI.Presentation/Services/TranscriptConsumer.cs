@@ -87,13 +87,20 @@ public class TranscriptConsumer : BackgroundService
             using var scope = _scopeFactory.CreateScope();
             var transcriptRepo = scope.ServiceProvider.GetRequiredService<ITranscriptRepository>();
 
+            // Serialize voice metrics to JSON for metadata
+            var metadata = transcriptMessage.VoiceMetrics is not null
+                ? JsonSerializer.Serialize(transcriptMessage.VoiceMetrics)
+                : null;
+
             var transcript = new Transcript(
                 transcriptMessage.RoomId,
                 transcriptMessage.UserName,
                 transcriptMessage.Text,
                 transcriptMessage.ParticipantId,
                 transcriptMessage.IsFinal,
-                transcriptMessage.Language);
+                transcriptMessage.Language,
+                transcriptMessage.SpeakerId,
+                metadata);
 
             await transcriptRepo.CreateAsync(transcript);
 
@@ -103,11 +110,13 @@ public class TranscriptConsumer : BackgroundService
                 {
                     RoomId = transcriptMessage.RoomId,
                     ParticipantId = transcriptMessage.ParticipantId,
+                    SpeakerId = transcriptMessage.SpeakerId,
                     UserName = transcriptMessage.UserName,
                     Text = transcriptMessage.Text,
                     IsFinal = transcriptMessage.IsFinal,
                     Language = transcriptMessage.Language,
-                    Timestamp = transcriptMessage.Timestamp
+                    Timestamp = transcriptMessage.Timestamp,
+                    VoiceMetrics = transcriptMessage.VoiceMetrics
                 });
 
             _logger.LogDebug("Transcript saved: [{User}] {Text}", transcriptMessage.UserName, 

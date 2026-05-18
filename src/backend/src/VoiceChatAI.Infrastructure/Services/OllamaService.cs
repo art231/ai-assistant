@@ -25,12 +25,16 @@ public class OllamaService
     /// <summary>
     /// Generates a meeting summary from recent transcripts.
     /// </summary>
-    public async Task<string> GenerateSummaryAsync(string transcriptsText, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateSummaryAsync(string transcriptsText, string? voiceMetricsSummary = null, CancellationToken cancellationToken = default)
     {
+        var voiceContext = !string.IsNullOrEmpty(voiceMetricsSummary)
+            ? $"\n\nVoice Metrics (for context):\n{voiceMetricsSummary}"
+            : string.Empty;
+
         var prompt = $@"You are an AI meeting assistant. Analyze the following meeting transcript and provide a concise summary of the main topics discussed.
 
 Transcript:
-{transcriptsText}
+{transcriptsText}{voiceContext}
 
 Provide a brief summary (2-3 sentences) of the key topics discussed.";
 
@@ -40,12 +44,16 @@ Provide a brief summary (2-3 sentences) of the key topics discussed.";
     /// <summary>
     /// Detects if the meeting topic has changed based on recent transcripts.
     /// </summary>
-    public async Task<TopicDetectionResult> DetectTopicChangeAsync(string recentTranscripts, CancellationToken cancellationToken = default)
+    public async Task<TopicDetectionResult> DetectTopicChangeAsync(string recentTranscripts, string? voiceMetricsSummary = null, CancellationToken cancellationToken = default)
     {
+        var voiceContext = !string.IsNullOrEmpty(voiceMetricsSummary)
+            ? $"\n\nVoice Metrics (for context):\n{voiceMetricsSummary}"
+            : string.Empty;
+
         var prompt = $@"You are an AI meeting assistant. Analyze the following recent meeting transcripts and determine if the topic has changed.
 
 Recent transcripts:
-{recentTranscripts}
+{recentTranscripts}{voiceContext}
 
 If the topic has changed, respond with:
 TOPIC_CHANGED: true
@@ -62,12 +70,16 @@ TOPIC_CHANGED: false";
     /// <summary>
     /// Generates advice for improving the meeting.
     /// </summary>
-    public async Task<string> GenerateAdviceAsync(string transcriptsText, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateAdviceAsync(string transcriptsText, string? voiceMetricsSummary = null, CancellationToken cancellationToken = default)
     {
+        var voiceContext = !string.IsNullOrEmpty(voiceMetricsSummary)
+            ? $"\n\nVoice Metrics (for context):\n{voiceMetricsSummary}"
+            : string.Empty;
+
         var prompt = $@"You are an AI meeting coach. Analyze the following meeting transcript and provide practical advice to improve the meeting.
 
 Transcript:
-{transcriptsText}
+{transcriptsText}{voiceContext}
 
 Provide 1-2 specific, actionable suggestions for improving the meeting. Be concise and constructive.";
 
@@ -75,14 +87,48 @@ Provide 1-2 specific, actionable suggestions for improving the meeting. Be conci
     }
 
     /// <summary>
+    /// Analyzes speakers in the meeting transcript for fatigue, gender, and break recommendations.
+    /// </summary>
+    public async Task<SpeakerAnalysisResult> AnalyzeSpeakerAsync(string transcriptsText, string? voiceMetricsSummary = null, CancellationToken cancellationToken = default)
+    {
+        var voiceContext = !string.IsNullOrEmpty(voiceMetricsSummary)
+            ? $"\n\nVoice Metrics (for context):\n{voiceMetricsSummary}"
+            : string.Empty;
+
+        var prompt = $@"You are an AI meeting assistant. Analyze the following meeting transcript and determine speaker characteristics.
+
+Transcript:
+{transcriptsText}{voiceContext}
+
+Respond in JSON format only (no markdown, no code blocks):
+{{
+  ""speakerCount"": number,
+  ""speakers"": [
+    {{""id"": ""speaker_0"", ""gender"": ""male/female"", ""fatigueLevel"": 0.0-1.0}}
+  ],
+  ""needsBreak"": true/false,
+  ""breakReason"": ""string"",
+  ""shouldPostpone"": true/false,
+  ""postponeReason"": ""string""
+}}";
+
+        var response = await CallOllamaAsync(prompt, cancellationToken);
+        return ParseSpeakerAnalysis(response);
+    }
+
+    /// <summary>
     /// Suggests alternative ideas for the current discussion topic.
     /// </summary>
-    public async Task<string> SuggestAlternativeIdeaAsync(string transcriptsText, CancellationToken cancellationToken = default)
+    public async Task<string> SuggestAlternativeIdeaAsync(string transcriptsText, string? voiceMetricsSummary = null, CancellationToken cancellationToken = default)
     {
+        var voiceContext = !string.IsNullOrEmpty(voiceMetricsSummary)
+            ? $"\n\nVoice Metrics (for context):\n{voiceMetricsSummary}"
+            : string.Empty;
+
         var prompt = $@"You are an AI brainstorming assistant. Based on the current meeting discussion, suggest an alternative idea or approach that the participants might not have considered.
 
 Current discussion:
-{transcriptsText}
+{transcriptsText}{voiceContext}
 
 Suggest one alternative idea or perspective. Be creative but relevant.";
 
@@ -116,6 +162,46 @@ Suggest one alternative idea or perspective. Be creative but relevant.";
             _logger.LogError(ex, "Error calling Ollama API");
             return string.Empty;
         }
+    }
+
+    private static SpeakerAnalysisResult ParseSpeakerAnalysis(string response)
+    {
+        var result = new SpeakerAnalysisResult();
+
+        if (string.IsNullOrEmpty(response))
+            return result;
+
+        try
+        {
+            // Try to parse as JSON directly
+            var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var parsed = JsonSerializer.Deserialize<SpeakerAnalysisResult>(response, jsonOptions);
+            if (parsed != null)
+                return parsed;
+        }
+        catch (JsonException)
+        {
+            // Try to extract JSON from the response (in case Ollama wraps it in text)
+            try
+            {
+                var startIdx = response.IndexOf('{');
+                var endIdx = response.LastIndexOf('}');
+                if (startIdx >= 0 && endIdx > startIdx)
+                {
+                    var jsonPart = response[startIdx..(endIdx + 1)];
+                    var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var parsed = JsonSerializer.Deserialize<SpeakerAnalysisResult>(jsonPart, jsonOptions);
+                    if (parsed != null)
+                        return parsed;
+                }
+            }
+            catch
+            {
+                // Ignore parse errors, return default
+            }
+        }
+
+        return result;
     }
 
     private static TopicDetectionResult ParseTopicDetection(string response)
@@ -176,4 +262,21 @@ public class TopicDetectionResult
     public bool TopicChanged { get; set; }
     public string? NewTopic { get; set; }
     public float Confidence { get; set; }
+}
+
+public class SpeakerAnalysisResult
+{
+    public int SpeakerCount { get; set; }
+    public List<SpeakerInfo> Speakers { get; set; } = new();
+    public bool NeedsBreak { get; set; }
+    public string BreakReason { get; set; } = string.Empty;
+    public bool ShouldPostpone { get; set; }
+    public string PostponeReason { get; set; } = string.Empty;
+}
+
+public class SpeakerInfo
+{
+    public string Id { get; set; } = string.Empty;
+    public string Gender { get; set; } = "unknown";
+    public double FatigueLevel { get; set; }
 }

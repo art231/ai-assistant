@@ -6,7 +6,9 @@ namespace VoiceChatAI.Domain.Entities;
 public class Participant
 {
     public Guid Id { get; private set; }
-    public Guid RoomId { get; private set; }
+    public Guid RoomId { get; set; }
+    // EF Core navigation property
+    public Room? Room { get; set; }
     public string UserName { get; private set; } = null!;
     public DateTime JoinedAt { get; private set; }
     public DateTime? LeftAt { get; private set; }

@@ -14,7 +14,21 @@ public class Room
     public string? Metadata { get; private set; }
 
     private readonly List<Participant> _participants = new();
+
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
     public IReadOnlyCollection<Participant> Participants => _participants.AsReadOnly();
+
+    // Navigation property for EF Core (maps to _participants backing field)
+    public List<Participant> ParticipantsNavigation
+    {
+        get => _participants;
+        set
+        {
+            _participants.Clear();
+            if (value is not null)
+                _participants.AddRange(value);
+        }
+    }
 
     private Room() { } // EF Core
 
@@ -29,7 +43,7 @@ public class Room
 
     public Participant AddParticipant(string userName)
     {
-        if (_participants.Any(p => p.UserName.Equals(userName, StringComparison.OrdinalIgnoreCase)))
+        if (_participants.Any(p => p.LeftAt == null && p.UserName.Equals(userName, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException($"Participant '{userName}' is already in the room.");
 
         if (_participants.Count >= MaxParticipants)
@@ -54,6 +68,7 @@ public class Room
             throw new InvalidOperationException("Participant not found.");
 
         participant.MarkLeft();
+        _participants.Remove(participant);
         
         if (_participants.Count == 0)
             End();

@@ -115,6 +115,13 @@ async function publishAudioChunk(roomId: string, participantId: string, data: Bu
 
 // ─── API Handlers (called from .NET backend via HTTP) ────────────
 export async function createRoomHandler(roomId: string): Promise<any> {
+    // Check if room already exists - if so, return it
+    const existingRoom = rooms.get(roomId);
+    if (existingRoom) {
+        console.log(`Room already exists: ${roomId}`);
+        return { roomId: roomId };
+    }
+
     const room = await createRoom(roomId);
     return { roomId: room.id };
 }
@@ -136,7 +143,7 @@ export async function joinRoomHandler(roomId: string, participantId: string): Pr
     };
 }
 
-export async function produceAudioHandler(
+export async function transportConnectHandler(
     roomId: string,
     participantId: string,
     dtlsParameters: any
@@ -147,11 +154,36 @@ export async function produceAudioHandler(
     const transport = room.participants.get(participantId);
     if (!transport) throw new Error(`Transport for ${participantId} not found`);
 
+    // Validate dtlsParameters - must have fingerprints array
+    if (!dtlsParameters || !dtlsParameters.fingerprints || !Array.isArray(dtlsParameters.fingerprints)) {
+        throw new Error(`dtlsParameters.fingerprints is not iterable. Received: ${JSON.stringify(dtlsParameters)}`);
+    }
+
     await transport.connect({ dtlsParameters });
 
+    return { success: true };
+}
+
+export async function produceAudioHandler(
+    roomId: string,
+    participantId: string,
+    kind: string,
+    rtpParameters: any
+): Promise<any> {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error(`Room ${roomId} not found`);
+
+    const transport = room.participants.get(participantId);
+    if (!transport) throw new Error(`Transport for ${participantId} not found`);
+
+    // Validate rtpParameters - must have codecs array
+    if (!rtpParameters || !rtpParameters.codecs || !Array.isArray(rtpParameters.codecs) || rtpParameters.codecs.length === 0) {
+        throw new Error(`missing params.codecs. Received rtpParameters: ${JSON.stringify(rtpParameters)}`);
+    }
+
     const producer = await transport.produce({
-        kind: 'audio',
-        rtpParameters: {},
+        kind: kind || 'audio',
+        rtpParameters,
     });
 
     room.audioProducer = producer;
@@ -166,7 +198,24 @@ export async function produceAudioHandler(
         // In production, you'd capture the RTP packets and forward them
     });
 
-    return { producerId: producer.id };
+    return { id: producer.id };
+}
+
+export async function addIceCandidateHandler(
+    roomId: string,
+    participantId: string,
+    candidate: any
+): Promise<any> {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error(`Room ${roomId} not found`);
+
+    const transport = room.participants.get(participantId);
+    if (!transport) throw new Error(`Transport for ${participantId} not found`);
+
+    // In mediasoup v3, ICE candidates are handled automatically by the transport.
+    // The addIceCandidate method was removed. We just acknowledge receipt.
+    console.log(`ICE candidate received for participant ${participantId}:`, candidate);
+    return { success: true };
 }
 
 export async function consumeAudioHandler(
@@ -177,8 +226,12 @@ export async function consumeAudioHandler(
     const room = rooms.get(roomId);
     if (!room) throw new Error(`Room ${roomId} not found`);
 
+    if (!room.audioProducer) {
+        throw new Error('No audio producer available in this room');
+    }
+
     if (!room.router.canConsume(rtpCapabilities)) {
-        throw new Error('Cannot consume audio');
+        throw new Error('Cannot consume audio - incompatible rtpCapabilities');
     }
 
     const transport = room.participants.get(participantId);
@@ -222,14 +275,67 @@ export async function leaveRoomHandler(roomId: string, participantId: string): P
     }
 }
 
+export async function getRtpCapabilitiesHandler(roomId: string): Promise<any> {
+    const room = rooms.get(roomId);
+    if (!room) throw new Error(`Room ${roomId} not found`);
+
+    return {
+        rtpCapabilities: room.router.rtpCapabilities,
+    };
+}
+
 // ─── HTTP Server for .NET Backend Communication ──────────────────
 import * as http from 'http';
 
+// ─── CORS Headers ────────────────────────────────────────────────
+const CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+};
+
+function setCorsHeaders(res: http.ServerResponse): void {
+    for (const [key, value] of Object.entries(CORS_HEADERS)) {
+        res.setHeader(key, value);
+    }
+}
+
 const server = http.createServer(async (req, res) => {
+    setCorsHeaders(res);
     res.setHeader('Content-Type', 'application/json');
 
+    // Handle CORS preflight (OPTIONS) requests
+    if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+    }
+
     try {
+        // Health check endpoint
+        if (req.url === '/health' && req.method === 'GET') {
+            res.writeHead(200);
+            res.end(JSON.stringify({ status: 'ok' }));
+            return;
+        }
+
+        // Only parse JSON body for methods that have a body
+        if (req.method !== 'POST' && req.method !== 'PUT') {
+            res.writeHead(405);
+            res.end(JSON.stringify({ error: `Method ${req.method} not allowed` }));
+            return;
+        }
+
         const body = await getRequestBody(req);
+
+        // Handle empty body (shouldn't happen for POST, but just in case)
+        if (!body || body.trim().length === 0) {
+            res.writeHead(400);
+            res.end(JSON.stringify({ error: 'Empty request body' }));
+            return;
+        }
+
         const { method, params } = JSON.parse(body);
 
         let result: any;
@@ -241,15 +347,33 @@ const server = http.createServer(async (req, res) => {
             case 'joinRoom':
                 result = await joinRoomHandler(params.roomId, params.participantId);
                 break;
+            case 'transportConnect':
+                result = await transportConnectHandler(
+                    params.roomId,
+                    params.participantId,
+                    params.dtlsParameters
+                );
+                break;
             case 'produceAudio':
-                result = await produceAudioHandler(params.roomId, params.participantId, params.dtlsParameters);
+                result = await produceAudioHandler(
+                    params.roomId,
+                    params.participantId,
+                    params.kind,
+                    params.rtpParameters
+                );
                 break;
             case 'consumeAudio':
                 result = await consumeAudioHandler(params.roomId, params.participantId, params.rtpCapabilities);
                 break;
+            case 'addIceCandidate':
+                result = await addIceCandidateHandler(params.roomId, params.participantId, params.candidate);
+                break;
             case 'leaveRoom':
                 await leaveRoomHandler(params.roomId, params.participantId);
                 result = { success: true };
+                break;
+            case 'getRtpCapabilities':
+                result = await getRtpCapabilitiesHandler(params.roomId);
                 break;
             default:
                 res.writeHead(400);

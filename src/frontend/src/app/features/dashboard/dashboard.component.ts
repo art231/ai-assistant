@@ -1,5 +1,6 @@
 import { Component, OnInit, AfterViewInit, ViewChild, ElementRef, OnDestroy } from '@angular/core';
 import { Chart, registerables } from 'chart.js';
+import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/services/api.service';
 
 Chart.register(...registerables);
@@ -83,6 +84,7 @@ interface MeetingEfficiency {
                 <th>Topics</th>
                 <th>Advice</th>
                 <th>Score</th>
+                <th>PDF</th>
               </tr>
             </thead>
             <tbody>
@@ -100,9 +102,14 @@ interface MeetingEfficiency {
                     {{ m.efficiencyScore }}%
                   </span>
                 </td>
+                <td>
+                  <button class="btn btn-sm btn-pdf" (click)="downloadPdf(m.roomId)" title="Скачать PDF-отчёт">
+                    📄
+                  </button>
+                </td>
               </tr>
               <tr *ngIf="meetings.length === 0">
-                <td colspan="7" class="empty-state">No meeting data available.</td>
+                <td colspan="8" class="empty-state">No meeting data available.</td>
               </tr>
             </tbody>
           </table>
@@ -224,6 +231,20 @@ interface MeetingEfficiency {
       color: #666;
       padding: 20px;
     }
+
+    .btn-pdf {
+      background: none;
+      border: 1px solid #533483;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px 6px;
+      transition: background-color 0.2s;
+    }
+
+    .btn-pdf:hover {
+      background-color: #533483;
+    }
     `,
   ],
 })
@@ -280,6 +301,27 @@ export class DashboardComponent implements OnInit, AfterViewInit, OnDestroy {
               this.meetings.length
           )
         : 0;
+  }
+
+  /**
+   * Download PDF report for a specific room.
+   */
+  async downloadPdf(roomId: string): Promise<void> {
+    try {
+      const blob = await firstValueFrom(this.apiService.exportRoomPdf(roomId));
+      if (!blob) return;
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `отчёт_встречи_${new Date().toISOString().split('T')[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Failed to download PDF:', err);
+    }
   }
 
   private createCharts(): void {

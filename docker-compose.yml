@@ -11,6 +11,7 @@ volumes:
   rabbitmq-data:
   recordings-data:
   ollama-data:
+  whisper-models:
   prometheus-data:
   grafana-data:
 
@@ -106,16 +107,30 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    ports:
+      - "${WHISPER_HTTP_PORT:-8081}:8080"
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
-      WHISPER_DEVICE: ${WHISPER_DEVICE:-cuda}
-      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-cpu}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-int8}
+      HTTP_PORT: 8080
+      DIARIZATION_ENABLED: ${DIARIZATION_ENABLED:-true}
+      DIARIZATION_WINDOW: ${DIARIZATION_WINDOW:-10.0}
+      HF_TOKEN: ${HF_TOKEN:-}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq}
       RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
       RABBITMQ_USER: ${RABBITMQ_USER:-guest}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-guest}
+    volumes:
+      - whisper-models:/app/models
     networks:
       - voicechat-network
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=10)"]
+      interval: 30s
+      timeout: 15s
+      retries: 5
+      start_period: 120s
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -174,6 +189,8 @@ services:
       RabbitMQ__Password: ${RABBITMQ_PASSWORD:-guest}
       Ollama__BaseUrl: ${OLLAMA_HOST:-http://ollama:11434}
       Ollama__Model: ${OLLAMA_MODEL:-llama3:8b}
+      Whisper__BaseUrl: ${WHISPER_URL:-http://whisper-livekit:8080}
+      Whisper__TimeoutSeconds: ${WHISPER_TIMEOUT:-300}
       Mediasoup__Url: http://mediasoup:${MEDIASOUP_PORT:-3000}
       Recordings__Path: ${RECORDINGS_PATH:-/app/recordings}
     ports:

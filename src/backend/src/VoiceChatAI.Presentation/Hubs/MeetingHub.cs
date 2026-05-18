@@ -40,65 +40,69 @@ public class MeetingHub : Hub
     /// <summary>
     /// Joins an existing meeting room.
     /// </summary>
-    public async Task<RoomDto> JoinRoom(Guid roomId, string userName)
+    public async Task<RoomDto> JoinRoom(string roomId, string userName)
     {
-        var participant = await _roomService.JoinRoomAsync(roomId, userName);
-        ConnectedUsers[Context.ConnectionId] = (roomId, participant.Id);
+        var guid = Guid.Parse(roomId);
+        var participant = await _roomService.JoinRoomAsync(guid, userName);
+        ConnectedUsers[Context.ConnectionId] = (guid, participant.Id);
 
-        await Groups.AddToGroupAsync(Context.ConnectionId, roomId.ToString());
-        await Clients.Group(roomId.ToString()).SendAsync("ParticipantJoined", participant);
+        await Groups.AddToGroupAsync(Context.ConnectionId, guid.ToString());
+        await Clients.Group(guid.ToString()).SendAsync("ParticipantJoined", participant);
 
         // Notify all participants about updated participant list
-        var participants = await _roomService.GetParticipantsAsync(roomId);
-        await Clients.Group(roomId.ToString()).SendAsync("ParticipantsUpdated", participants);
+        var participants = await _roomService.GetParticipantsAsync(guid);
+        await Clients.Group(guid.ToString()).SendAsync("ParticipantsUpdated", participants);
 
-        var room = await _roomService.GetRoomAsync(roomId);
-        _logger.LogInformation("User {User} joined room {RoomId}", userName, roomId);
+        var room = await _roomService.GetRoomAsync(guid);
+        _logger.LogInformation("User {User} joined room {RoomId}", userName, guid);
         return room!;
     }
 
     /// <summary>
     /// Leaves the current meeting room.
     /// </summary>
-    public async Task LeaveRoom(Guid roomId)
+    public async Task LeaveRoom(string roomId)
     {
+        var guid = Guid.Parse(roomId);
         if (ConnectedUsers.TryGetValue(Context.ConnectionId, out var user))
         {
-            await _roomService.LeaveRoomAsync(roomId, user.ParticipantId);
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId.ToString());
-            await Clients.Group(roomId.ToString()).SendAsync("ParticipantLeft", user.ParticipantId);
+            await _roomService.LeaveRoomAsync(guid, user.ParticipantId);
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, guid.ToString());
+            await Clients.Group(guid.ToString()).SendAsync("ParticipantLeft", user.ParticipantId);
 
             // Notify all participants about updated participant list
-            var participants = await _roomService.GetParticipantsAsync(roomId);
-            await Clients.Group(roomId.ToString()).SendAsync("ParticipantsUpdated", participants);
+            var participants = await _roomService.GetParticipantsAsync(guid);
+            await Clients.Group(guid.ToString()).SendAsync("ParticipantsUpdated", participants);
 
             ConnectedUsers.Remove(Context.ConnectionId);
-            _logger.LogInformation("User left room {RoomId}", roomId);
+            _logger.LogInformation("User left room {RoomId}", guid);
         }
     }
 
     /// <summary>
     /// Ends the meeting room and stops recording if active.
     /// </summary>
-    public async Task EndRoom(Guid roomId)
+    public async Task EndRoom(string roomId)
     {
-        if (_recordingService.IsRecording(roomId))
+        var guid = Guid.Parse(roomId);
+        if (_recordingService.IsRecording(guid))
         {
-            await _recordingService.StopRecordingAsync(roomId);
+            await _recordingService.StopRecordingAsync(guid);
         }
-        await _roomService.EndRoomAsync(roomId);
-        await Clients.Group(roomId.ToString()).SendAsync("RoomEnded", roomId);
-        _logger.LogInformation("Room ended: {RoomId}", roomId);
+        await _roomService.EndRoomAsync(guid);
+        await Clients.Group(guid.ToString()).SendAsync("RoomEnded", guid);
+        _logger.LogInformation("Room ended: {RoomId}", guid);
     }
 
     /// <summary>
     /// Sends a chat message to the room.
     /// </summary>
-    public async Task SendMessage(Guid roomId, string message)
+    public async Task SendMessage(string roomId, string message)
     {
+        var guid = Guid.Parse(roomId);
         if (ConnectedUsers.TryGetValue(Context.ConnectionId, out var user))
         {
-            await Clients.Group(roomId.ToString()).SendAsync("MessageReceived", new
+            await Clients.Group(guid.ToString()).SendAsync("MessageReceived", new
             {
                 ParticipantId = user.ParticipantId,
                 Text = message,
@@ -110,11 +114,12 @@ public class MeetingHub : Hub
     /// <summary>
     /// Updates speaking status for the participant.
     /// </summary>
-    public async Task UpdateSpeakingStatus(Guid roomId, bool isSpeaking, float audioLevel = 0)
+    public async Task UpdateSpeakingStatus(string roomId, bool isSpeaking, float audioLevel = 0)
     {
+        var guid = Guid.Parse(roomId);
         if (ConnectedUsers.TryGetValue(Context.ConnectionId, out var user))
         {
-            await Clients.Group(roomId.ToString()).SendAsync("SpeakingStatusChanged", new
+            await Clients.Group(guid.ToString()).SendAsync("SpeakingStatusChanged", new
             {
                 ParticipantId = user.ParticipantId,
                 IsSpeaking = isSpeaking,
@@ -126,24 +131,25 @@ public class MeetingHub : Hub
     /// <summary>
     /// Starts recording the meeting.
     /// </summary>
-    public async Task StartRecording(Guid roomId)
+    public async Task StartRecording(string roomId)
     {
+        var guid = Guid.Parse(roomId);
         try
         {
-            var recording = await _recordingService.StartRecordingAsync(roomId);
-            await Clients.Group(roomId.ToString()).SendAsync("RecordingStarted", new
+            var recording = await _recordingService.StartRecordingAsync(guid);
+            await Clients.Group(guid.ToString()).SendAsync("RecordingStarted", new
             {
-                RoomId = roomId,
+                RoomId = guid,
                 RecordingId = recording.Id,
                 StartedAt = recording.StartedAt
             });
-            _logger.LogInformation("Recording started for room {RoomId}", roomId);
+            _logger.LogInformation("Recording started for room {RoomId}", guid);
         }
         catch (InvalidOperationException ex)
         {
             await Clients.Caller.SendAsync("RecordingError", new
             {
-                RoomId = roomId,
+                RoomId = guid,
                 Error = ex.Message
             });
         }
@@ -152,26 +158,27 @@ public class MeetingHub : Hub
     /// <summary>
     /// Stops recording the meeting.
     /// </summary>
-    public async Task StopRecording(Guid roomId)
+    public async Task StopRecording(string roomId)
     {
+        var guid = Guid.Parse(roomId);
         try
         {
-            var recording = await _recordingService.StopRecordingAsync(roomId);
-            await Clients.Group(roomId.ToString()).SendAsync("RecordingStopped", new
+            var recording = await _recordingService.StopRecordingAsync(guid);
+            await Clients.Group(guid.ToString()).SendAsync("RecordingStopped", new
             {
-                RoomId = roomId,
+                RoomId = guid,
                 RecordingId = recording.Id,
                 DurationSeconds = recording.DurationSeconds,
                 EndedAt = recording.EndedAt
             });
             _logger.LogInformation("Recording stopped for room {RoomId}, duration: {Duration}s",
-                roomId, recording.DurationSeconds);
+                guid, recording.DurationSeconds);
         }
         catch (InvalidOperationException ex)
         {
             await Clients.Caller.SendAsync("RecordingError", new
             {
-                RoomId = roomId,
+                RoomId = guid,
                 Error = ex.Message
             });
         }
@@ -180,9 +187,10 @@ public class MeetingHub : Hub
     /// <summary>
     /// Gets recording status for a room.
     /// </summary>
-    public Task<bool> GetRecordingStatus(Guid roomId)
+    public Task<bool> GetRecordingStatus(string roomId)
     {
-        return Task.FromResult(_recordingService.IsRecording(roomId));
+        var guid = Guid.Parse(roomId);
+        return Task.FromResult(_recordingService.IsRecording(guid));
     }
 
     /// <summary>
@@ -196,15 +204,26 @@ public class MeetingHub : Hub
     /// <summary>
     /// Gets participants in a room.
     /// </summary>
-    public async Task<IEnumerable<ParticipantDto>> GetParticipants(Guid roomId)
+    public async Task<IEnumerable<ParticipantDto>> GetParticipants(string roomId)
     {
-        return await _roomService.GetParticipantsAsync(roomId);
+        var guid = Guid.Parse(roomId);
+        return await _roomService.GetParticipantsAsync(guid);
+    }
+
+    public override async Task OnConnectedAsync()
+    {
+        _logger.LogInformation("SignalR client connected: {ConnectionId}", Context.ConnectionId);
+        await base.OnConnectedAsync();
     }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        _logger.LogInformation("SignalR client disconnected: {ConnectionId}, Error: {Error}",
+            Context.ConnectionId, exception?.Message ?? "none");
+
         if (ConnectedUsers.TryGetValue(Context.ConnectionId, out var user))
         {
+            _logger.LogInformation("Removing user from room {RoomId} on disconnect", user.RoomId);
             await _roomService.LeaveRoomAsync(user.RoomId, user.ParticipantId);
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, user.RoomId.ToString());
             await Clients.Group(user.RoomId.ToString()).SendAsync("ParticipantLeft", user.ParticipantId);
@@ -213,6 +232,11 @@ public class MeetingHub : Hub
             await Clients.Group(user.RoomId.ToString()).SendAsync("ParticipantsUpdated", participants);
 
             ConnectedUsers.Remove(Context.ConnectionId);
+        }
+
+        if (exception != null)
+        {
+            _logger.LogError(exception, "SignalR client disconnected with error: {ConnectionId}", Context.ConnectionId);
         }
 
         await base.OnDisconnectedAsync(exception);

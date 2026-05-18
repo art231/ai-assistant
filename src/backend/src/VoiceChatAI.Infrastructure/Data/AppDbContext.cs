@@ -26,7 +26,12 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50)
                 .HasConversion<string>();
             entity.Property(e => e.Metadata).HasColumnType("jsonb");
-            entity.Ignore(e => e.Participants);
+
+            // Map Participants navigation to _participants backing field
+            entity.HasMany(e => e.ParticipantsNavigation)
+                  .WithOne(p => p.Room)
+                  .HasForeignKey(p => p.RoomId)
+                  .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Participant configuration
@@ -34,6 +39,7 @@ public class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.UserName).IsRequired().HasMaxLength(255);
+            entity.Property(e => e.RoomId).IsRequired();
             entity.HasIndex(e => e.RoomId);
         });
 
@@ -44,10 +50,18 @@ public class AppDbContext : DbContext
             entity.Property(e => e.UserName).IsRequired().HasMaxLength(255);
             entity.Property(e => e.Text).IsRequired();
             entity.Property(e => e.Language).HasMaxLength(10);
-            entity.Property(e => e.Embedding).HasColumnType("vector(1536)");
+            entity.Property(e => e.SpeakerId).HasMaxLength(50);
+            entity.Property(e => e.Metadata).HasColumnType("jsonb");
+            entity.Property(e => e.Embedding)
+                .HasColumnType("text")
+                .HasConversion(
+                    v => v == null ? null : string.Join(',', v),
+                    v => v == null ? null : v.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(float.Parse).ToArray()
+                );
             entity.HasIndex(e => e.RoomId);
             entity.HasIndex(e => e.Timestamp);
             entity.HasIndex(e => new { e.RoomId, e.Timestamp });
+            entity.HasIndex(e => e.SpeakerId);
         });
 
         // MeetingRecording configuration

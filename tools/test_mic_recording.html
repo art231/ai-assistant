@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Тест записи микрофона</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 20px auto; padding: 20px; }
+        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; }
+        .status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+        .recording { background: #ffcccc; }
+        .idle { background: #e0e0e0; }
+        .completed { background: #ccffcc; }
+        .error { background: #ffcccc; color: #cc0000; }
+        pre { background: #f5f5f5; padding: 10px; border-radius: 4px; overflow-x: auto; }
+        .info { margin: 10px 0; padding: 10px; background: #e8f4fd; border-radius: 4px; }
+        table { border-collapse: collapse; width: 100%; margin: 10px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <h1>🎤 Тест записи аудио через микрофон</h1>
+    
+    <div class="info">
+        <strong>Информация:</strong>
+        <p>Этот тест проверяет, как MediaRecorder API записывает аудио с микрофона 
+        и в каком формате сохраняет файл.</p>
+    </div>
+
+    <div>
+        <button id="btnStart">▶ Начать запись</button>
+        <button id="btnStop" disabled>⏹ Остановить</button>
+        <button id="btnDownload" disabled>💾 Скачать запись</button>
+        <button id="btnUpload" disabled>📤 Отправить на сервер</button>
+    </div>
+
+    <div id="status" class="status idle">
+        Статус: ожидание
+    </div>
+
+    <div id="mimeInfo" class="info">
+        <strong>Поддерживаемые MIME-типы:</strong>
+        <pre id="mimeList">Проверка...</pre>
+    </div>
+
+    <div id="fileInfo" style="display:none;" class="info">
+        <strong>Информация о файле:</strong>
+        <pre id="fileDetails"></pre>
+    </div>
+
+    <div id="uploadResult" style="display:none;" class="info">
+        <strong>Результат загрузки:</strong>
+        <pre id="uploadDetails"></pre>
+    </div>
+
+    <h2>Результаты проверки</h2>
+    <table id="resultsTable">
+        <tr>
+            <th>Параметр</th>
+            <th>Значение</th>
+            <th>Статус</th>
+        </tr>
+        <tr>
+            <td>MIME-тип записи</td>
+            <td id="resultMime">—</td>
+            <td id="resultMimeStatus">⏳</td>
+        </tr>
+        <tr>
+            <td>Расширение файла</td>
+            <td id="resultExt">—</td>
+            <td id="resultExtStatus">⏳</td>
+        </tr>
+        <tr>
+            <td>Размер файла</td>
+            <td id="resultSize">—</td>
+            <td id="resultSizeStatus">⏳</td>
+        </tr>
+        <tr>
+            <td>Длительность</td>
+            <td id="resultDuration">—</td>
+            <td id="resultDurationStatus">⏳</td>
+        </tr>
+        <tr>
+            <td>Формат OGG?</td>
+            <td id="resultIsOgg">—</td>
+            <td id="resultIsOggStatus">⏳</td>
+        </tr>
+        <tr>
+            <td>Загрузка на сервер</td>
+            <td id="resultUpload">—</td>
+            <td id="resultUploadStatus">⏳</td>
+        </tr>
+    </table>
+
+    <script>
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let recordedBlob = null;
+        let stream = null;
+        let startTime = null;
+        let durationTimer = null;
+
+        const statusEl = document.getElementById('status');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop = document.getElementById('btnStop');
+        const btnDownload = document.getElementById('btnDownload');
+        const btnUpload = document.getElementById('btnUpload');
+
+        function setStatus(text, type) {
+            statusEl.textContent = 'Статус: ' + text;
+            statusEl.className = 'status ' + type;
+        }
+
+        function updateResult(id, value, status) {
+            document.getElementById(id).textContent = value;
+            document.getElementById(id + 'Status').textContent = status;
+        }
+
+        // Проверка поддерживаемых MIME-типов
+        function checkMimeTypes() {
+            const types = [
+                'audio/webm;codecs=opus',
+                'audio/webm',
+                'audio/ogg;codecs=opus',
+                'audio/ogg',
+                'audio/wav',
+                'audio/mp4',
+                'audio/mpeg',
+            ];
+            
+            const results = types.map(t => {
+                const supported = MediaRecorder.isTypeSupported(t);
+                return `${supported ? '✅' : '❌'} ${t}`;
+            }).join('\n');
+
+            document.getElementById('mimeList').textContent = results;
+        }
+
+        // Запуск записи
+        btnStart.onclick = async () => {
+            try {
+                setStatus('Запрашиваю доступ к микрофону...', 'idle');
+                
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Определяем лучший MIME-тип
+                const mimeTypes = [
+                    'audio/webm;codecs=opus',
+                    'audio/webm',
+                    'audio/ogg;codecs=opus',
+                    'audio/ogg',
+                    '',
+                ];
+
+                let selectedMimeType = '';
+                for (const mimeType of mimeTypes) {
+                    if (!mimeType || MediaRecorder.isTypeSupported(mimeType)) {
+                        selectedMimeType = mimeType;
+                        break;
+                    }
+                }
+
+                const options = {};
+                if (selectedMimeType) {
+                    options.mimeType = selectedMimeType;
+                }
+
+                audioChunks = [];
+                mediaRecorder = new MediaRecorder(stream, options);
+                
+                const actualMime = mediaRecorder.mimeType;
+                updateResult('resultMime', actualMime, '✅');
+                
+                // Определяем расширение
+                let ext = 'webm';
+                if (actualMime.includes('ogg')) ext = 'ogg';
+                else if (actualMime.includes('wav')) ext = 'wav';
+                else if (actualMime.includes('mp4')) ext = 'mp4';
+                else if (actualMime.includes('mpeg')) ext = 'mp3';
+                
+                updateResult('resultExt', '.' + ext, ext === 'ogg' ? '✅ OGG' : '⚠️ Не OGG');
+                updateResult('resultIsOgg', ext === 'ogg' ? 'Да' : `Нет (${ext})`, ext === 'ogg' ? '✅' : '❌');
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstart = () => {
+                    startTime = Date.now();
+                    setStatus('🔴 Идёт запись...', 'recording');
+                    btnStart.disabled = true;
+                    btnStop.disabled = false;
+                    btnDownload.disabled = true;
+                    btnUpload.disabled = true;
+                    
+                    // Таймер длительности
+                    if (durationTimer) clearInterval(durationTimer);
+                    durationTimer = setInterval(() => {
+                        const dur = ((Date.now() - startTime) / 1000).toFixed(1);
+                        setStatus(`🔴 Идёт запись... (${dur} сек)`, 'recording');
+                    }, 200);
+                };
+
+                mediaRecorder.onstop = () => {
+                    if (durationTimer) clearInterval(durationTimer);
+                    
+                    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+                    updateResult('resultDuration', duration + ' сек', '✅');
+                    
+                    // Создаём blob
+                    const mimeType = audioChunks[0]?.type || actualMime;
+                    recordedBlob = new Blob(audioChunks, { type: mimeType });
+                    
+                    const sizeKB = (recordedBlob.size / 1024).toFixed(1);
+                    updateResult('resultSize', sizeKB + ' KB', '✅');
+                    
+                    setStatus(`✅ Запись завершена: ${sizeKB} KB, ${duration} сек`, 'completed');
+                    
+                    btnStart.disabled = false;
+                    btnStop.disabled = true;
+                    btnDownload.disabled = false;
+                    btnUpload.disabled = false;
+                    
+                    // Показываем информацию о файле
+                    document.getElementById('fileInfo').style.display = 'block';
+                    document.getElementById('fileDetails').textContent = 
+                        `Blob type: ${recordedBlob.type}\n` +
+                        `Blob size: ${recordedBlob.size} bytes (${sizeKB} KB)\n` +
+                        `Duration: ${duration} сек\n` +
+                        `Chunks: ${audioChunks.length}\n` +
+                        `Extension: .${ext}`;
+                    
+                    // Останавливаем треки
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.onerror = (event) => {
+                    const error = event.error || 'Unknown error';
+                    setStatus(`❌ Ошибка: ${error.message || error}`, 'error');
+                    btnStart.disabled = false;
+                    btnStop.disabled = true;
+                };
+
+                // Записываем с timeslice 1000ms для получения chunk'ов
+                mediaRecorder.start(1000);
+                
+            } catch (err) {
+                setStatus(`❌ Ошибка: ${err.message}`, 'error');
+                btnStart.disabled = false;
+            }
+        };
+
+        // Остановка записи
+        btnStop.onclick = () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') {
+                setStatus('⏹ Останавливаю запись...', 'idle');
+                mediaRecorder.stop();
+            }
+        };
+
+        // Скачать запись
+        btnDownload.onclick = () => {
+            if (!recordedBlob) return;
+            
+            const ext = recordedBlob.type.includes('ogg') ? 'ogg' : 'webm';
+            const url = URL.createObjectURL(recordedBlob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `test_recording.${ext}`;
+            a.click();
+            URL.revokeObjectURL(url);
+            
+            setStatus(`💾 Файл test_recording.${ext} скачан`, 'completed');
+        };
+
+        // Отправить на сервер
+        btnUpload.onclick = async () => {
+            if (!recordedBlob) return;
+            
+            try {
+                setStatus('📤 Загружаю на сервер...', 'idle');
+                btnUpload.disabled = true;
+                
+                const formData = new FormData();
+                const ext = recordedBlob.type.includes('ogg') ? 'ogg' : 'webm';
+                const file = new File([recordedBlob], `test_${Date.now()}.${ext}`, { type: recordedBlob.type });
+                formData.append('file', file);
+                
+                // Используем тестовый roomId
+                const testRoomId = '00000000-0000-0000-0000-000000000001';
+                const apiUrl = window.location.origin.includes('localhost:4200') 
+                    ? 'http://localhost:5000' 
+                    : window.location.origin;
+                
+                const response = await fetch(`${apiUrl}/api/recordings/${testRoomId}/upload-audio`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                document.getElementById('uploadResult').style.display = 'block';
+                document.getElementById('uploadDetails').textContent = JSON.stringify(result, null, 2);
+                
+                if (response.ok) {
+                    updateResult('resultUpload', '✅ Успешно', '✅');
+                    setStatus('✅ Файл успешно загружен на сервер!', 'completed');
+                } else {
+                    updateResult('resultUpload', `❌ Ошибка: ${result.error || response.status}`, '❌');
+                    setStatus(`❌ Ошибка загрузки: ${result.error || response.statusText}`, 'error');
+                }
+                
+            } catch (err) {
+                updateResult('resultUpload', `❌ ${err.message}`, '❌');
+                setStatus(`❌ Ошибка: ${err.message}`, 'error');
+            } finally {
+                btnUpload.disabled = false;
+            }
+        };
+
+        // Инициализация
+        checkMimeTypes();
+        setStatus('Готов к записи. Нажмите "Начать запись"', 'idle');
+    </script>
+</body>
+</html>

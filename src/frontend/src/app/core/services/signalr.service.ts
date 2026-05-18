@@ -37,6 +37,34 @@ export interface AlternativeIdeaMessage {
   timestamp: number;
 }
 
+export interface VoiceMetricsDto {
+  gender: string;
+  genderConfidence: number;
+  emotion: string;
+  emotionConfidence: number;
+  fatigueLevel: number;
+  fatigueIndicators: string[];
+  speechRate: number;
+  pitchVariability: number;
+}
+
+export interface SpeakerInfo {
+  id: string;
+  gender: string;
+  fatigueLevel: number;
+}
+
+export interface SpeakerAnalysisMessage {
+  roomId: string;
+  speakerCount: number;
+  speakers: SpeakerInfo[];
+  needsBreak: boolean;
+  breakReason: string;
+  shouldPostpone: boolean;
+  postponeReason: string;
+  timestamp: number;
+}
+
 export interface ParticipantInfo {
   participantId: string;
   userName: string;
@@ -75,21 +103,52 @@ export class SignalrService {
   private adviceSubject = new BehaviorSubject<AdviceMessage | null>(null);
   private alternativeIdeaSubject = new BehaviorSubject<AlternativeIdeaMessage | null>(null);
   private participantsSubject = new BehaviorSubject<ParticipantInfo[]>([]);
+  private speakerAnalysisSubject = new BehaviorSubject<SpeakerAnalysisMessage | null>(null);
   private recordingStatusSubject = new BehaviorSubject<boolean>(false);
   private recordingErrorSubject = new BehaviorSubject<string | null>(null);
   private connectedSubject = new BehaviorSubject<boolean>(false);
+  private connectionErrorSubject = new BehaviorSubject<string | null>(null);
 
   transcripts$ = this.transcriptsSubject.asObservable();
   summary$ = this.summarySubject.asObservable();
   topicChange$ = this.topicChangeSubject.asObservable();
   advice$ = this.adviceSubject.asObservable();
   alternativeIdea$ = this.alternativeIdeaSubject.asObservable();
+  speakerAnalysis$ = this.speakerAnalysisSubject.asObservable();
   participants$ = this.participantsSubject.asObservable();
   recordingStatus$ = this.recordingStatusSubject.asObservable();
   recordingError$ = this.recordingErrorSubject.asObservable();
   connected$ = this.connectedSubject.asObservable();
+  connectionError$ = this.connectionErrorSubject.asObservable();
 
   constructor() {}
+
+  get isConnected(): boolean {
+    return this.connectedSubject.value;
+  }
+
+  async ensureConnectedAsync(timeoutMs: number = 10000): Promise<void> {
+    const connection = this.hubConnection;
+    if (!connection) {
+      await this.startConnection();
+    } else if (connection.state === signalR.HubConnectionState.Connected) {
+      return;
+    } else if (connection.state === signalR.HubConnectionState.Disconnected) {
+      await this.startConnection();
+    }
+
+    // Wait for connection with timeout
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+      if (this.hubConnection?.state === signalR.HubConnectionState.Connected) {
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    throw new Error('SignalR connection timeout');
+  }
+
 
   async startConnection(): Promise<void> {
     this.hubConnection = new signalR.HubConnectionBuilder()
@@ -103,10 +162,13 @@ export class SignalrService {
       await this.hubConnection.start();
       this.connectionId = this.hubConnection.connectionId;
       this.connectedSubject.next(true);
+      this.connectionErrorSubject.next(null);
       console.log('SignalR connected:', this.connectionId);
-    } catch (err) {
+    } catch (err: any) {
+      const errorMsg = err?.message || err?.toString() || 'Unknown SignalR connection error';
       console.error('SignalR connection error:', err);
       this.connectedSubject.next(false);
+      this.connectionErrorSubject.next(errorMsg);
       setTimeout(() => this.startConnection(), 5000);
     }
 
@@ -115,11 +177,12 @@ export class SignalrService {
       this.connectedSubject.next(false);
     });
 
-    this.hubConnection.onreconnected((connectionId) => {
+    this.hubConnection.onreconnected((connectionId: string | undefined) => {
       this.connectionId = connectionId ?? null;
       this.connectedSubject.next(true);
       console.log('SignalR reconnected:', connectionId);
     });
+
 
     this.hubConnection.onclose(() => {
       this.connectedSubject.next(false);
@@ -127,6 +190,7 @@ export class SignalrService {
       setTimeout(() => this.startConnection(), 5000);
     });
   }
+
 
   private registerHandlers(): void {
     this.hubConnection.on('TranscriptReceived', (message: TranscriptMessage) => {
@@ -163,6 +227,10 @@ export class SignalrService {
     this.hubConnection.on('RecordingStopped', (message: RecordingStoppedMessage) => {
       this.recordingStatusSubject.next(false);
       console.log('Recording stopped:', message);
+    });
+
+    this.hubConnection.on('SpeakerAnalysis', (message: SpeakerAnalysisMessage) => {
+      this.speakerAnalysisSubject.next(message);
     });
 
     this.hubConnection.on('RecordingError', (message: RecordingErrorMessage) => {

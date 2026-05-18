@@ -61,6 +61,22 @@ builder.Services.AddHttpClient<OllamaService>(client =>
     client.Timeout = TimeSpan.FromSeconds(60);
 });
 
+// ─── Whisper ─────────────────────────────────────────────────────
+builder.Services.Configure<WhisperOptions>(
+    builder.Configuration.GetSection(WhisperOptions.SectionName));
+builder.Services.AddHttpClient<WhisperService>(client =>
+{
+    var baseUrl = builder.Configuration.GetValue<string>("Whisper:BaseUrl") ?? "http://whisper-livekit:8080";
+    client.BaseAddress = new Uri(baseUrl);
+    client.Timeout = TimeSpan.FromSeconds(300);
+});
+
+// Named client for WhisperLiveKit summarization API
+builder.Services.AddHttpClient("WhisperLiveKit", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+
 // ─── SignalR ─────────────────────────────────────────────────────
 builder.Services.AddSignalR()
     .AddJsonProtocol(options =>
@@ -80,7 +96,7 @@ builder.Services.AddCors(options =>
 
     options.AddPolicy("SignalR", policy =>
     {
-        policy.SetIsOriginAllowed(_ => true)
+        policy.WithOrigins("http://localhost:4200", "http://localhost:5000")
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
@@ -101,18 +117,56 @@ builder.Services.AddSwaggerGen();
 // ─── App Pipeline ────────────────────────────────────────────────
 var app = builder.Build();
 
-// Apply migrations on startup
+// Ensure database is created on startup
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    var sp = scope.ServiceProvider;
+    var db = sp.GetRequiredService<AppDbContext>();
     try
     {
-        db.Database.Migrate();
-        app.Logger.LogInformation("Database migrations applied successfully");
+        db.Database.EnsureCreated();
+        app.Logger.LogInformation("Database ensured created successfully");
+
+        // Apply missing migrations for columns added after initial schema creation
+        // (EnsureCreated doesn't update existing tables)
+        ApplyMissingMigrations(db, sp);
     }
     catch (Exception ex)
     {
-        app.Logger.LogWarning(ex, "Could not apply migrations. Database may not be ready yet.");
+        app.Logger.LogWarning(ex, "Could not ensure database created. Database may not be ready yet.");
+    }
+}
+
+static void ApplyMissingMigrations(AppDbContext db, IServiceProvider sp)
+{
+    var logger = sp.GetRequiredService<ILogger<Program>>();
+    try
+    {
+        // Add columns to Transcripts that were added after initial schema creation
+        // (EnsureCreated doesn't update existing tables)
+        var migrations = new[]
+        {
+            "ALTER TABLE \"Transcripts\" ADD COLUMN IF NOT EXISTS \"Metadata\" jsonb NULL",
+            "ALTER TABLE \"Transcripts\" ADD COLUMN IF NOT EXISTS \"SpeakerId\" varchar(50) NULL DEFAULT 'unknown'",
+            "ALTER TABLE \"Transcripts\" ADD COLUMN IF NOT EXISTS \"Embedding\" text NULL",
+        };
+
+        foreach (var sql in migrations)
+        {
+            try
+            {
+                db.Database.ExecuteSqlRaw(sql);
+                logger.LogInformation("Applied migration: {Sql}", sql);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not apply migration: {Sql}", sql);
+            }
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "Could not apply missing migrations");
     }
 }
 

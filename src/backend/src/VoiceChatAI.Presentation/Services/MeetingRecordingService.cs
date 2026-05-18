@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VoiceChatAI.Domain.Entities;
 using VoiceChatAI.Domain.Interfaces;
+using VoiceChatAI.Infrastructure.Services;
 
 namespace VoiceChatAI.Presentation.Services;
 
@@ -163,8 +164,8 @@ public class MeetingRecordingService : BackgroundService
     }
 
     /// <summary>
-    /// Post-processes a completed recording: runs offline transcription
-    /// and saves the full text to the database.
+    /// Post-processes a completed recording: runs offline transcription via Whisper,
+    /// generates a summary via Ollama, and saves both to the database.
     /// </summary>
     private async Task PostProcessRecordingAsync(MeetingRecording recording)
     {
@@ -172,26 +173,67 @@ public class MeetingRecordingService : BackgroundService
         {
             using var scope = _scopeFactory.CreateScope();
             var repo = scope.ServiceProvider.GetRequiredService<IMeetingRecordingRepository>();
+            var whisperService = scope.ServiceProvider.GetRequiredService<WhisperService>();
+            var ollamaService = scope.ServiceProvider.GetRequiredService<OllamaService>();
 
             // Update status to processing
             recording = (await repo.GetByIdAsync(recording.Id))!;
             if (recording == null) return;
 
-            // In production, this would call WhisperX or similar offline transcription.
-            // For now, we simulate by concatenating existing real-time transcripts.
-            var transcriptRepo = scope.ServiceProvider.GetRequiredService<ITranscriptRepository>();
-            var transcripts = await transcriptRepo.GetRecentByRoomIdAsync(recording.RoomId, 10000);
+            _logger.LogInformation("Post-processing recording {RecordingId}, audio file: {Path}",
+                recording.Id, recording.AudioPath);
 
-            if (transcripts.Count > 0)
+            // Step 1: Transcribe the OGG file via Whisper HTTP API
+            var transcription = await whisperService.TranscribeFileAsync(recording.AudioPath);
+            var fullText = transcription.Text;
+
+            if (!string.IsNullOrEmpty(fullText))
             {
-                var fullText = string.Join("\n", transcripts.Select(t =>
-                    $"[{t.Timestamp:HH:mm:ss}] {t.UserName}: {t.Text}"));
+                // Format with timestamps if segments are available
+                if (transcription.Segments.Count > 0)
+                {
+                    fullText = string.Join("\n", transcription.Segments.Select(s =>
+                        $"[{TimeSpan.FromSeconds(s.Start):hh\\:mm\\:ss}] {s.Text}"));
+                }
 
                 recording.SetFullText(fullText);
-                await repo.UpdateAsync(recording);
-                _logger.LogInformation("Post-processing completed for recording {RecordingId}, {Count} transcripts",
-                    recording.Id, transcripts.Count);
+                _logger.LogInformation("Whisper transcription completed for recording {RecordingId}: {Length} chars",
+                    recording.Id, fullText.Length);
+
+                // Step 2: Generate summary via Ollama
+                var summary = await ollamaService.GenerateSummaryAsync(fullText);
+                if (!string.IsNullOrEmpty(summary))
+                {
+                    recording.SetSummary(summary);
+                    _logger.LogInformation("Summary generated for recording {RecordingId}", recording.Id);
+                }
             }
+            else
+            {
+                // Fallback: use existing real-time transcripts
+                _logger.LogWarning("Whisper returned empty text for recording {RecordingId}, falling back to transcripts",
+                    recording.Id);
+
+                var transcriptRepo = scope.ServiceProvider.GetRequiredService<ITranscriptRepository>();
+                var transcripts = await transcriptRepo.GetRecentByRoomIdAsync(recording.RoomId, 10000);
+
+                if (transcripts.Count > 0)
+                {
+                    fullText = string.Join("\n", transcripts.Select(t =>
+                        $"[{t.Timestamp:HH:mm:ss}] {t.UserName}: {t.Text}"));
+
+                    recording.SetFullText(fullText);
+
+                    var summary = await ollamaService.GenerateSummaryAsync(fullText);
+                    if (!string.IsNullOrEmpty(summary))
+                    {
+                        recording.SetSummary(summary);
+                    }
+                }
+            }
+
+            await repo.UpdateAsync(recording);
+            _logger.LogInformation("Post-processing completed for recording {RecordingId}", recording.Id);
         }
         catch (Exception ex)
         {
